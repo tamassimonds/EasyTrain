@@ -187,10 +187,11 @@ def create_ds_config(config: TrainingConfig, dataset_size: int) -> Dict:
 
 def setup_wandb(config: TrainingConfig):
     try:
-        api_key = "bdcf2519ae5a2abc6658658c17f34b1109d9a672"
-
+        wandb_api_key = os.getenv('WANDB_API_KEY')
+        if not wandb_api_key:
+            raise ValueError("WANDB_API_KEY environment variable not set")
             
-        wandb.login(key=api_key)
+        wandb.login(key=wandb_api_key)
         wandb.init(
             project="llama-instruction-tuning",
             config={
@@ -211,7 +212,10 @@ def train():
     config = TrainingConfig()
     
     # Login to Hugging Face
-    login(token="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")
+    hf_token = os.getenv('HF_TOKEN')
+    if not hf_token:
+        raise ValueError("HF_TOKEN environment variable not set")
+    login(token=hf_token)
     
     # Set up distributed training
     deepspeed.init_distributed()
