@@ -11,6 +11,11 @@ from torch.utils.data import Dataset, DataLoader
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from PIL import Image
 from huggingface_hub import login
+from deepspeed.utils.zero_to_fp32 import convert_zero_checkpoint_to_fp32_state_dict
+from deepspeed.checkpoint.utils import clone_tensors_for_torch_save
+import os
+import sys
+
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -99,12 +104,12 @@ class InstructionDataset(Dataset):
 @dataclass
 class TrainingConfig:
     # Model configuration
-    model_name: str = "meta-llama/Llama-3.2-11B-Vision-Instruct"
+    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
     max_length: int = 1024
     
     # Training configuration
     train_micro_batch_size_per_gpu: int = 4
-    gradient_accumulation_steps: int = 8
+    gradient_accumulation_steps: int = 16
     num_train_epochs: int = 1
     learning_rate: float = 2e-5
     weight_decay: float = 0.01
@@ -123,7 +128,6 @@ class TrainingConfig:
     def total_train_batch_size(self) -> int:
         # This should equal micro_batch * grad_acc * world_size
         return self.train_micro_batch_size_per_gpu * self.gradient_accumulation_steps * 2  # world_size is 2
-
 def create_ds_config(config: TrainingConfig, dataset_size: int) -> Dict:
     # Calculate total steps
     total_steps = int(config.num_train_epochs * dataset_size / config.total_train_batch_size)
@@ -153,45 +157,34 @@ def create_ds_config(config: TrainingConfig, dataset_size: int) -> Dict:
         },
         "fp16": {
             "enabled": True,
-            "auto_cast": True,
             "loss_scale": 0,
             "initial_scale_power": 16,
-            "loss_scale_window": 1000,
-            "hysteresis": 2,
-            "min_loss_scale": 1
+            "loss_scale_window": 1000
         },
         "zero_optimization": {
-            "stage": 3,
+            "stage": 2,  # Changed to stage 2 for more stable saving
             "offload_optimizer": {
                 "device": "cpu",
-                "pin_memory": True,
-            },
-            "offload_param": {
-                "device": "none",
-                "pin_memory": True,
+                "pin_memory": True
             },
             "overlap_comm": True,
             "contiguous_gradients": True,
-            "reduce_bucket_size": "auto",
-            "stage3_prefetch_bucket_size": "auto",
-            "stage3_param_persistence_threshold": "auto"
+            "reduce_scatter": True,
+            "reduce_bucket_size": 5e7,
+            "allgather_bucket_size": 5e7
         },
         "gradient_clipping": 1.0,
-        "steps_per_print": 100,
-        "wall_clock_breakdown": False,
-        "monitor_config": {
-            "enabled": False,
-            "tag": "train"
-        }
+        "prescale_gradients": False,
+        "steps_per_print": 1,
+        "wall_clock_breakdown": False
     }
 
 def setup_wandb(config: TrainingConfig):
     try:
-        wandb_api_key = os.getenv('WANDB_API_KEY')
-        if not wandb_api_key:
-            raise ValueError("WANDB_API_KEY environment variable not set")
+        api_key = "bdcf2519ae5a2abc6658658c17f34b1109d9a672"
+
             
-        wandb.login(key=wandb_api_key)
+        wandb.login(key=api_key)
         wandb.init(
             project="llama-instruction-tuning",
             config={
@@ -212,10 +205,7 @@ def train():
     config = TrainingConfig()
     
     # Login to Hugging Face
-    hf_token = os.getenv('HF_TOKEN')
-    if not hf_token:
-        raise ValueError("HF_TOKEN environment variable not set")
-    login(token=hf_token)
+    login(token="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")
     
     # Set up distributed training
     deepspeed.init_distributed()
@@ -289,34 +279,56 @@ def train():
             
             global_step += 1
 
-    # Modified saving code
-    if model_engine.global_rank == 0:  # Only save on the primary GPU
+    # Replace the saving code section in your train() function with this:
+
+    # Synchronize before starting save process
+     # First save the DeepSpeed checkpoint
+    # Replace the saving section in train() with this:
+    # Simple synchronization before save
+    torch.distributed.barrier()
+    
+    if model_engine.global_rank == 0:
         logger.info("Training completed. Starting model save process...")
         final_output_dir = os.path.join(config.output_dir, "final")
+        fp32_output_dir = os.path.join(config.output_dir, "fp32")
         os.makedirs(final_output_dir, exist_ok=True)
+        os.makedirs(fp32_output_dir, exist_ok=True)
         
         try:
-            logger.info("Saving DeepSpeed checkpoint...")
-            model_engine.save_checkpoint(final_output_dir)
-            logger.info("DeepSpeed checkpoint saved successfully")
+            # Save using state dict approach
+            logger.info("Saving model state...")
+            state_dict = model_engine.module.state_dict()
+            checkpoint = {
+                'epoch': config.num_train_epochs,
+                'global_step': global_step,
+                'model_state_dict': state_dict,
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
+            }
             
-            logger.info("Saving tokenizer...")
+            torch.save(checkpoint, os.path.join(fp32_output_dir, "pytorch_model.bin"))
+            logger.info("Model state saved successfully")
+            
+            # Save config and tokenizer
+            logger.info("Saving tokenizer and config...")
             tokenizer.save_pretrained(final_output_dir)
-            logger.info("Tokenizer saved successfully")
+            model.config.save_pretrained(final_output_dir)
+            logger.info("Tokenizer and config saved successfully")
             
-            # Verify the save
-            if os.path.exists(os.path.join(final_output_dir, "zero_to_fp32.py")):
-                logger.info(f"Model successfully saved to {final_output_dir}")
-            else:
-                logger.warning("Model save may be incomplete - checkpoint files not found")
-                
         except Exception as e:
-            logger.error(f"Error during model saving: {e}")
-            raise  # Re-raise the exception to make sure the error is visible
-    
-    # Synchronize all processes to ensure saving is complete
-    torch.distributed.barrier()
-    logger.info("Training and saving completed!")
+            logger.error(f"Error during save process: {e}")
+            raise
 
+    # Wait for save to complete
+    torch.distributed.barrier()
+    
+    # Clean up - do this on all ranks
+    if torch.distributed.is_initialized():
+        try:
+            torch.distributed.destroy_process_group()
+        except Exception as e:
+            logger.warning(f"Error during cleanup: {e}")
+    
+    logger.info(f"Process {model_engine.global_rank} completed")
 if __name__ == "__main__":
     train()
