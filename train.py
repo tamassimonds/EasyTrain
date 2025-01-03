@@ -104,7 +104,7 @@ class InstructionDataset(Dataset):
 @dataclass
 class TrainingConfig:
     # Model configuration
-    model_name: str = "meta-llama/Llama-3.2-1B-Instruct"
+    model_name: str = "meta-llama/Llama-3.2-11B-Vision-Instruct"
     max_length: int = 1024
     
     # Training configuration
@@ -162,7 +162,7 @@ def create_ds_config(config: TrainingConfig, dataset_size: int) -> Dict:
             "loss_scale_window": 1000
         },
         "zero_optimization": {
-            "stage": 2,  # Changed to stage 2 for more stable saving
+            "stage": 3,  # Changed to stage 3
             "offload_optimizer": {
                 "device": "cpu",
                 "pin_memory": True
@@ -281,39 +281,45 @@ def train():
 
     # Replace the saving code section in your train() function with this:
 
-    # Synchronize before starting save process
-     # First save the DeepSpeed checkpoint
-    # Replace the saving section in train() with this:
-    # Simple synchronization before save
+    # Synchronize before save
     torch.distributed.barrier()
     
+    checkpoint_dir = os.path.join(config.output_dir, "checkpoints")
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    
+    # First save the DeepSpeed checkpoint (this saves sharded model state)
+    logger.info("Saving DeepSpeed checkpoint...")
+    model_engine.save_checkpoint(checkpoint_dir)
+    
     if model_engine.global_rank == 0:
-        logger.info("Training completed. Starting model save process...")
-        final_output_dir = os.path.join(config.output_dir, "final")
-        fp32_output_dir = os.path.join(config.output_dir, "fp32")
-        os.makedirs(final_output_dir, exist_ok=True)
-        os.makedirs(fp32_output_dir, exist_ok=True)
+        logger.info("Training completed. Converting checkpoint to single file...")
         
         try:
-            # Save using state dict approach
-            logger.info("Saving model state...")
-            state_dict = model_engine.module.state_dict()
-            checkpoint = {
-                'epoch': config.num_train_epochs,
-                'global_step': global_step,
-                'model_state_dict': state_dict,
-                'optimizer_state_dict': optimizer.state_dict(),
-                'scheduler_state_dict': scheduler.state_dict() if scheduler else None,
-            }
+            # Convert ZeRO checkpoint to single file
+            single_file_path = os.path.join(config.output_dir, "pytorch_model.bin")
             
-            torch.save(checkpoint, os.path.join(fp32_output_dir, "pytorch_model.bin"))
-            logger.info("Model state saved successfully")
+            # Use DeepSpeed's utility to convert checkpoint to single file
+            logger.info("Converting ZeRO checkpoint to single file...")
+            convert_zero_checkpoint_to_fp32_state_dict(
+                checkpoint_dir,  # Load from DeepSpeed checkpoint dir
+                single_file_path  # Save as single file
+            )
             
             # Save config and tokenizer
             logger.info("Saving tokenizer and config...")
+            final_output_dir = os.path.join(config.output_dir, "final")
+            os.makedirs(final_output_dir, exist_ok=True)
             tokenizer.save_pretrained(final_output_dir)
             model.config.save_pretrained(final_output_dir)
-            logger.info("Tokenizer and config saved successfully")
+            
+            # Move the consolidated model file to final directory
+            if os.path.exists(single_file_path):
+                os.rename(
+                    single_file_path,
+                    os.path.join(final_output_dir, "pytorch_model.bin")
+                )
+            
+            logger.info("Save process completed successfully")
             
         except Exception as e:
             logger.error(f"Error during save process: {e}")
