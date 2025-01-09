@@ -1,0 +1,52 @@
+[
+    {
+        "prompt": "What is 2+2?",
+        "response": "The answer is 4",
+        "reward": 1.0
+    },
+    {
+        "prompt": "Solve x^2 = 9",
+        "response": "x = -8",
+        "reward": -1.0
+    },
+    {
+        "prompt": "What is the capital of France?",
+        "response": "The capital of France is Paris",
+        "reward": 1.0
+    },
+    {
+        "prompt": "What color is the sky on a clear day?",
+        "response": "The sky is green on a clear day",
+        "reward": -1.0
+    },
+    {
+        "prompt": "How many days are in a week?",
+        "response": "There are 7 days in a week",
+        "reward": 1.0
+    },
+    {
+        "prompt": "What is 15 divided by 3?",
+        "response": "15 divided by 3 equals 4",
+        "reward": -1.0
+    },
+    {
+        "prompt": "Who wrote Romeo and Juliet?",
+        "response": "William Shakespeare wrote Romeo and Juliet",
+        "reward": 1.0
+    },
+    {
+        "prompt": "What is the chemical symbol for water?",
+        "response": "The chemical symbol for water is H2O",
+        "reward": 1.0
+    },
+    {
+        "prompt": "What is the largest planet in our solar system?",
+        "response": "Saturn is the largest planet",
+        "reward": -1.0
+    },
+    {
+        "prompt": "What is the square root of 16?",
+        "response": "The square root of 16 is 4",
+        "reward": 1.0
+    }
+]

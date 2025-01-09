@@ -1,0 +1,21 @@
+{
+    "train_batch_size": 4,
+    "fp16": {
+      "enabled": true
+    },
+  
+    "zero_optimization": {
+      "stage": 3,
+      "overlap_comm": true,
+      "contiguous_gradients": true
+    },
+  
+   
+    "gradient_accumulation_steps": 1,
+  
+   
+    "steps_per_print": 1,
+  
+    "zero_save_16bit_model": true
+  }
+  
