@@ -1,1 +1,12 @@
 torchrun --nproc_per_node=4 train.py
+deepspeed train.py --num_gpus=4
+
+deepspeed inference_deepspeed.py \
+    --model_path ./qwen-math-finetuned-merged \
+    --prompts_file prompts.json \
+    --output_file prompts_output.json \
+    --mp_size 4 \
+    --max_new_tokens 1024 \
+    --temperature 0.7 \
+    --top_p 0.9
+
